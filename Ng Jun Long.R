@@ -1,0 +1,378 @@
+## Ng Jun Long
+## U2110010D
+## BC2406 CBA
+
+## Import packages
+library(data.table)
+library(rpart)
+library(rpart.plot) 
+library(stringr)
+library(ggplot2)
+library(caret)
+library(skimr)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(class)
+library(RANN)
+library(VIM)
+library(ggpubr)
+library(MLmetrics)
+library(purrr)
+library(ggpubr)
+library(mice)
+library(caTools)
+library(ROSE)
+
+## Set Seed
+set.seed(8)
+
+## Import Data
+setwd("/Users/junlongng/Desktop/NTU/Year 2/Semester 1/BC2406 Analytics 1/AY22 BC2406 CBA")
+df1 = fread("/Users/junlongng/Desktop/NTU/Year 2/Semester 1/BC2406 Analytics 1/AY22 BC2406 CBA/homeloan2.csv", na.strings = c("NA", "missing", "N/A", "", "m", "M", "na", ".",NA))
+dt1 = data.table(df1)
+dim(dt1)
+summary(dt1)
+
+## ------------ Qn 1a -------------- ##
+sapply(dt1, class)
+factorcolumns = c("Gender","Married","Self_Employed","Credit_Score","Loan_Status","Education","Property_Area")
+
+## For Dependents, it's abit strange since there is 3+. Shall make it into ordered factor
+dt1$Dependents = factor(df1$Dependents, ordered = T, levels = c("0","1","2","3+",""))
+dt1[, (factorcolumns):= lapply(.SD, factor), .SDcols = factorcolumns]
+
+## Changing Applicant Income to numeric for cents value
+dt1$ApplicantIncome = as.numeric(dt1$ApplicantIncome)
+
+## Changing Applicant Income to numeric for cents value
+dt1$ApplicantIncome = as.numeric(dt1$ApplicantIncome)
+summary(dt1)
+sapply(dt1, class)
+
+## ------------ Qn 1b -------------- ##
+## Have decided to use Mode to replace categorical data that are NA & median to replace continuous variables that are NA
+calc_mode = function(x){
+  
+  # List the distinct / unique values
+  distinct_values = unique(x)
+  
+  # Count the occurrence of each distinct value
+  distinct_tabulate= tabulate(match(x, distinct_values))
+  
+  # Return the value with the highest occurrence
+  distinct_values[which.max(distinct_tabulate)]
+}
+
+## Replacing NA values in categorical variables with mode
+dt1$Gender[is.na(dt1$Gender)] = calc_mode(dt1$Gender)
+dt1$Dependents[is.na(dt1$Dependents)] = calc_mode(dt1$Dependents)
+dt1$Married[is.na(dt1$Married)] = calc_mode(dt1$Married)
+dt1$Self_Employed[is.na(dt1$Self_Employed)] = calc_mode(dt1$Self_Employed)
+dt1$Credit_Score[is.na(dt1$Credit_Score)] = calc_mode(dt1$Credit_Score)
+
+## Replacing NA values in continuous variables with median
+dt1$LoanAmount[is.na(dt1$LoanAmount)] = median(dt1$LoanAmount, na.rm = TRUE)
+dt1$Loan_Amount_Term[is.na(dt1$Loan_Amount_Term)] = median(dt1$Loan_Amount_Term, na.rm = TRUE)
+
+## All NA values have been filled..
+sum(is.na(dt1))
+str(dt1)
+
+## ------------ Qn 2 -------------- ##
+## Loan ID is not needed for analysis
+dt1 = dt1[,c(2:13)]
+str(dt1)
+## Plotting graphs For Categorical Data
+factor = names(keep(dt1,is.factor))
+factor
+gglist = list()
+for(graph in 1:(length(factor)-1)){
+  gglist[graph]=list(ggplot(data=dt1,aes_string(factor[graph],fill='Loan_Status'))+ geom_bar(position = 'dodge')+ ylab("Count of people") + theme(legend.position = c(.9,.75),legend.background=element_rect(fill = alpha("white", 0.5)))+ scale_fill_brewer(palette = 'Paired'))
+}
+ggarrange(plotlist=gglist)
+
+
+
+## Plottting graph for continuous variables
+continuous_list = names(keep(dt1,is.numeric))
+continuous_list
+cont_plot1 = list()
+for (i in 1:(length(continuous_list))) {
+  ## Creating Box Plots using a for loop
+  cont_plot1[i] = list(ggplot(data = dt1, aes_string(x ="Loan_Status", y = continuous_list[i], color = "Loan_Status")) + geom_boxplot() + theme(legend.position = c(1,2), legend.background = element_rect(fill = alpha("white", 0.5))) + scale_color_brewer(palette = "Dark2"))
+}
+ggarrange(plotlist = cont_plot1)
+  
+
+## Both incomes seem abit strange
+plot(density(dt1$ApplicantIncome))
+plot(density(dt1$CoapplicantIncome))
+plot(density(dt1$LoanAmount))
+
+
+## Need to create dummy variables for log model later on
+dt1$Gender = ifelse(dt1$Gender == "Male", 1,0)
+dt1$Gender
+dt1$Married = ifelse(dt1$Married == "Yes",1,0)
+dt1$Married
+dt1$Education = ifelse(dt1$Education == "Graduate",1,0)
+dt1$Education
+dt1$Self_Employed = ifelse(dt1$Self_Employed == "Yes",1,0)
+dt1$Self_Employed
+
+copydt = dt1
+copydt$TotalIncome = copydt$ApplicantIncome + copydt$CoapplicantIncome
+copydt$TotalIncome = log(copydt$TotalIncome)
+plot(density(copydt$TotalIncome))
+
+copydt$LoanRatio = copydt$LoanAmount/copydt$Loan_Amount_Term
+copydt$LoanRatio = log(copydt$LoanRatio)
+plot(density(copydt$LoanRatio))
+
+
+## Need to remove the previous incomes and the loan
+copydt = copydt[ ,c("ApplicantIncome","CoapplicantIncome","LoanAmount", "Loan_Amount_Term"):=NULL]
+
+summary(copydt)
+dim(copydt)
+
+
+## ------------- Q3 ----------- ## 
+
+train_data = sample.split(Y=copydt$Loan_Status,SplitRatio = 0.7)
+trainset = subset(copydt,train_data==T)
+testset = subset(copydt, train_data==F)
+
+summary(trainset$Loan_Status)
+## This shows a oversample population of Loan Status Y 
+
+## Need to rebalance the trainset such that it is more "fair" 
+## Need to achieve 50% of each occurence. Set N to 2* amount of Y
+balancetrain_data = ovun.sample(Loan_Status~., data=trainset, seed = 8, method ="over", N = 576 )$data
+table(balancetrain_data$Loan_Status)
+summary(balancetrain_data)
+
+
+
+model1=glm(Loan_Status~.,data=balancetrain_data, family="binomial")
+summary(model1)
+OR = exp(coef(model1))
+OR
+CI = exp(confint(model1))
+CI
+
+
+
+## Keeping only signif variables using backwards elimination
+model2=glm(Loan_Status~Married+Dependents+Credit_Score+Property_Area,data=balancetrain_data,family="binomial")
+summary(model2)
+
+model3=glm(Loan_Status~Married+Credit_Score+Property_Area,data=balancetrain_data, family="binomial")
+summary(model3)
+
+model4 =glm(Loan_Status~Credit_Score+Married,data=balancetrain_data, family="binomial")
+summary(model4)
+
+
+## Checking for the AIC values 
+model_list = c(AIC(model1), AIC(model2), AIC(model3),AIC(model4))
+AIC(model1)
+AIC(model2)
+AIC(model3)
+AIC(model4)
+## Lowed AIC is best model
+min(model_list)
+## This shows us that model 2 is the best model, hence should build around it
+
+
+levels(balancetrain_data$Loan_Status)
+
+## Accuracy of Training on trainset
+prob = predict(model2, type = 'response')
+classifier = ifelse(prob>0.5, "N", "Y")
+classifier=as.factor(classifier)
+confusionMatrix(classifier,balancetrain_data$Loan_Status,positive = 'Y')
+## Logistic Regression has a 74% accuracy on balanced data
+
+
+## Testing out on the testset with log model trained on balanced data
+test_prob = predict(model2, newdata=testset, type="response")
+test_classifier = ifelse(test_prob>0.5,"N","Y")
+test_classifier = as.factor(test_classifier)
+confusionMatrix(test_classifier,testset$Loan_Status,positive = 'Y')
+log_model_acc = mean(test_classifier == testset$Loan_Status) * 100
+log_model_acc
+## Logistic Regression has an accuracy of 76.49%
+
+
+## Do Cart on balanced Data
+bcart = rpart(Loan_Status ~. , data = balancetrain_data, method="class",control = rpart.control(cp=0))
+
+printcp(bcart)
+plotcp(bcart)
+rpart.plot(bcart, nn = T, main ="Maximal Balance CART")
+
+
+## Pruning the tree
+## Acknowledgements to Professor Neumann of BC2406 for the pruning code.
+cverrorcap = bcart$cptable[which.min(bcart$cptable[,"xerror"]),"xerror"] + bcart$cptable[which.min(bcart$cptable[,"xerror"]),"xstd"]
+
+i = 1; j=4
+while (bcart$cptable[i,j] > cverrorcap) {
+  i = i+1
+}
+
+optimal_cp = ifelse(i > 1, sqrt(bcart$cptable[i,1] * bcart$cptable[i-1,1]),1)
+optimal_cp
+
+
+bcart2 = prune(bcart, cp = optimal_cp)
+rpart.plot(bcart2,nn=T,main="Newer Pruned Tree")
+
+## Testing CART on trainset data
+predictcart1 = predict(bcart2, newdata = balancetrain_data, type = "class")
+result1 = data.frame(balancetrain_data$Loan_Status, predictcart1)
+cart1_accuracy = mean(predictcart1 == balancetrain_data$Loan_Status)
+table(actual = balancetrain_data$Loan_Status, predictcart1)
+cart1_accuracy = cart1_accuracy*100
+cart1_accuracy
+
+
+## Using it on the testset
+predictcart2 = predict(bcart2, newdata = testset, type="class")
+result2 = data.frame(testset$Loan_Status, predictcart2)
+cart2accuracy = mean(predictcart2 == testset$Loan_Status)
+table(actual = testset$Loan_Status, predict=predictcart2)
+cart2accuracy = cart2accuracy * 100
+cart2accuracy 
+
+## Comparing accuracy of log model and cart model
+accuracy_table = data.frame("Model_Table" = 2:1)
+rownames(accuracy_table) = c("CART on Balanced Data", "Logistic Regression on Balanced Data")
+colnames(accuracy_table) = "Model Accuracy In Percentage"
+accuracy_table[1,1] = cart2accuracy
+accuracy_table[2,1] = log_model_acc
+accuracy_table
+## From this, we can see that the CART model has a higher accuracy on balanced data.
+
+
+## --------- 3C ------------- ##
+bcart2$variable.importance
+## This shows us that credit score is the most important variable
+## Third most important variable would be the total income of both applicants
+## Second most important variable would be the LoanRatio consisting on Loan Amount/ Loan Amount Term
+## Fourth important would be the property area
+## Least important would be marriage status
+## The rest of the variables are only marginally important and not really significant
+
+
+## ---------- 3D ------------ ##
+levels(balancetrain_data$Loan_Status)
+## This shows us that our base reference level is Yes. This will be our positive value as can be seen.
+## A type one error is a false positive error.
+## Hence a type one error in our loan status analysis would be that a applicant is falsely predicted to be a future positive loan status. 
+## What this means is that the applicant is actually not worthy of a loan, but the prediction algorithm classifies them as a worthy loan applicant.
+
+## A type two error in this is a false negative error.
+## What this means is that our applicant is truly a worthy loan applicant, but the prediction algorithm falsely deems them as unworthy. 
+
+## Therefore, for a bank, the more serious error would be a type 1 error where the loan applicant is truly unworthy of receiving a loan, but the prediction models deemed them worthy. 
+## As a result, the bank would have loaned money to an unworthy person which increases the chance that the loan applicant might not pay back the money they loaned.
+
+
+## ---------- Q4 ------------- ##
+## Answered in word document
+
+## ----------- Q5 -------------- ##
+## Final Dataset 
+GDE1 = copydt
+GDE1$Gender = ifelse(GDE1$Gender == 1, "Male","Female")
+GDE1$Gender = as.factor(GDE1$Gender)
+summary(GDE1$Gender)
+## Using Data exploration to see if there is indeed sexual discrimination
+ggplot(data=GDE1,aes_string(factor(GDE1$Gender),fill='Loan_Status'))+ geom_bar(position = 'dodge')+ theme(legend.position = c(.9,.75),legend.background=element_rect(fill = alpha("white", 0.5)))+ scale_fill_brewer(palette = 'Paired')
+## While at first glance, this might seem that there is a disproportionate amount of males that got loan approved.
+## This shows us that there is in fact more males that even applied for the loans as compared to females
+
+## Looking into the relevant specific columns
+GDE_df = data.frame(GDE1$Gender, GDE1$Loan_Status)
+options(repr.plot.width = 10, repr.plot.height = 7)
+ggplot(GDE_df, aes(x=GDE1$Gender, fill= GDE1$Loan_Status)) + geom_bar(position ="fill", width = 0.4) + ylab("Ratio") + scale_fill_manual(labels = c("No Loan","Received Loan"), values = c("orange", "lightgreen"))
+
+## Ratio Analuysis based purely on Gender
+females_approved = (sum(GDE1$Gender == "Female" & GDE1$Loan_Status =="Y")/sum(GDE1$Gender == "Female"))
+females_approved
+males_approved = (sum(GDE1$Gender == "Male" & GDE1$Loan_Status =="Y")/sum(GDE1$Gender == "Male"))
+males_approved
+
+GDETable = data.frame("Approval Rates" = 2:1)
+rownames(GDETable) = c("Males Approved", "Females Approved")
+colnames(GDETable) = "Approval Percentages"
+GDETable[1,1] = males_approved
+GDETable[2,1] = females_approved
+GDETable
+
+## Creating a simple ratio
+females_approved = (sum(GDE1$Gender == "Female" & GDE1$Loan_Status =="Y" & GDE1$Credit_Score ==1))/sum(GDE1$Gender == "Female")
+females_approved
+males_approved = (sum(GDE1$Gender == "Male" & GDE1$Loan_Status =="Y" & GDE1$Credit_Score == 1))/sum(GDE1$Gender == "Male")
+males_approved
+
+GDETable = data.frame("Approval Rates" = 2:1)
+rownames(GDETable) = c("Males Approved", "Females Approved")
+colnames(GDETable) = "Approval Percentages"
+GDETable[1,1] = males_approved
+GDETable[2,1] = females_approved
+GDETable
+
+## Ratio Analysis based purely of Gender against Credit Score
+females_approved = (sum(GDE1$Gender == "Female" & GDE1$Credit_Score =="1")/sum(GDE1$Gender == "Female"))
+females_approved
+males_approved = (sum(GDE1$Gender == "Male" & GDE1$Credit_Score =="1")/sum(GDE1$Gender == "Male"))
+males_approved
+
+GDETable = data.frame("Approval Rates" = 2:1)
+rownames(GDETable) = c("Males Approved", "Females Approved")
+colnames(GDETable) = "Approval Percentages"
+GDETable[1,1] = males_approved
+GDETable[2,1] = females_approved
+GDETable
+
+ggplot(GDE_df, aes(x=GDE1$Gender, fill= GDE1$Credit_Score)) + geom_bar(position ="fill", width = 0.4) + ylab("Ratio") + scale_fill_manual(labels = c("Bad Credit Score","Good Credit Score"), values = c("orange", "lightgreen"))
+
+## Conducting a sampling for gender, this will give us equal representation.
+summary(GDE1$Gender)
+gender_sampled = ovun.sample(Gender ~., data= GDE1, seed = 8, method ="under", N = (109*2))$data
+summary(gender_sampled$Gender)
+
+females_approved = (sum(gender_sampled$Gender == "Female" & gender_sampled$Loan_Status =="Y"))/sum(gender_sampled$Gender == "Female")
+females_approved
+males_approved = (sum(gender_sampled$Gender == "Male" & gender_sampled$Loan_Status =="Y"))/sum(gender_sampled$Gender == "Male")
+males_approved
+
+
+## using logistic regression to see if gender correlates with Loan Status
+gender_log = glm(Loan_Status~., family = binomial, data = gender_sampled)
+summary(gender_log)
+gender_log2 = glm(Gender~., family = binomial, data = gender_sampled)
+summary(gender_log2)
+
+## displaying graphs using balanced data
+GDE_df = data.frame(gender_sampled$Gender, gender_sampled$Credit_Score, gender_sampled$Loan_Status)
+options(repr.plot.width = 10, repr.plot.height = 7)
+ggplot(GDE_df, aes(x=gender_sampled$Gender, fill= gender_sampled$Loan_Status)) + geom_bar(position ="fill", width = 0.4) + ylab("Ratio") + scale_fill_manual(labels = c("No Loan","Received Loan"), values = c("orange", "lightgreen"))
+
+
+## ----------- Q6 -------------- ##
+## Answered in word document
+
+
+
+
+
+
+
+
+
+
